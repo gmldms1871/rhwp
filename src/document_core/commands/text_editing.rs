@@ -2133,7 +2133,25 @@ impl DocumentCore {
     /// 채우기 후 저장하는 무상태 소비자(CLI·filler)는 저장 직전에 한 번 부르면 된다.
     ///
     /// 바뀐 표가 있으면 true (이때 조판은 이미 갱신된 상태로 다시 수행된다).
+    ///
+    /// **고정점까지 반복한다.** 한 번만 돌리면 행 높이가 실측에 못 미쳐 셀 내용이 다음 행
+    /// 영역을 침범한다(실문장 채우기에서 글자 겹침으로 드러남). 행 높이를 키우면 재측정값도
+    /// 따라 커지는 구간이 있어(세로정렬·rowspan 배분) 한 번에 수렴하지 않는다 — 실측상
+    /// 위험성평가서 양식은 7회에서 멈춘다. 발산 방어로 상한을 둔다.
     pub fn sync_stored_table_heights_for_export(&mut self) -> bool {
+        const MAX_PASSES: usize = 8;
+        let mut changed_any = false;
+        for _ in 0..MAX_PASSES {
+            if !self.sync_stored_table_heights_pass() {
+                break;
+            }
+            changed_any = true;
+        }
+        changed_any
+    }
+
+    /// [`Self::sync_stored_table_heights_for_export`] 의 1회 패스.
+    fn sync_stored_table_heights_pass(&mut self) -> bool {
         // batch 모드에서도 실측이 필요하므로 paginate_if_needed()가 아니라 paginate().
         // (batch 는 Command 마다의 조판을 건너뛸 뿐, 내보내기 직전 1회는 있어야 한다.)
         self.paginate();

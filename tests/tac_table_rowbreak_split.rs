@@ -190,3 +190,64 @@ fn tac_rowbreak_table_splits_pages_after_cell_fill() {
         core.page_count()
     );
 }
+
+/// 쪽이 늘어나는 것만으로는 부족하다 — **표가 실제로 행 단위로 나뉘고, 채운 값이
+/// 늘어난 쪽에 그려져야** 한다. 표 뒤 문단이 밀려 쪽 수만 늘어난 상태를 성공으로
+/// 오독하지 않도록, `partialTable` 방출과 텍스트 출현 횟수를 함께 본다.
+#[test]
+fn filled_tac_table_actually_splits_and_renders_on_later_pages() {
+    let mut core = load_sample();
+    let (para_idx, ctrl_idx) = find_tac_table(&core);
+
+    const MARK: &str = "가나다라마바사아자차";
+    let text = MARK.repeat(3);
+    let cells = cell_count(&core, para_idx, ctrl_idx);
+    let mut filled = 0usize;
+    for cell_idx in 0..cells {
+        if core
+            .insert_text_in_cell_native(0, para_idx, ctrl_idx, cell_idx, 0, 0, &text)
+            .is_ok()
+        {
+            filled += 1;
+        }
+    }
+    core.sync_stored_table_heights_for_export();
+    assert!(core.page_count() > 1, "표가 본문보다 커져야 하는 전제");
+
+    // (1) 표가 행 단위로 나뉘었나
+    // dump_page_items_json 은 쪽 배열을 그대로 돌려준다 (CLI 가 "pages" 로 감싼다).
+    let items = core.dump_page_items_json(None);
+    let kinds: Vec<String> = items
+        .as_array()
+        .map(|pages| {
+            pages
+                .iter()
+                .flat_map(|p| p["columns"].as_array().cloned().unwrap_or_default())
+                .flat_map(|c| c["items"].as_array().cloned().unwrap_or_default())
+                .filter_map(|i| i["kind"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        kinds.iter().any(|k| k == "partialTable"),
+        "표가 안 나뉘었다 — 배치된 항목: {kinds:?}"
+    );
+
+    // (2) 채운 값이 실제로 그려지나 (쪽 밖으로 잘리면 텍스트에 안 잡힌다)
+    // 좁은 셀에서는 채운 문구가 줄바꿈으로 쪼개지므로 공백류를 걷어내고 센다.
+    let mut seen = 0usize;
+    for page in 0..core.page_count() {
+        let text: String = core
+            .extract_page_text_native(page)
+            .unwrap_or_default()
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect();
+        seen += text.matches(MARK).count();
+    }
+    let expected = filled * 3;
+    assert!(
+        seen >= expected,
+        "채운 값이 쪽 밖으로 잘렸다 — {filled}칸 × 3회 = {expected}회 기대, 실제 {seen}회"
+    );
+}

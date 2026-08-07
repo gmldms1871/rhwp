@@ -15348,7 +15348,20 @@ impl TypesetEngine {
                         .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
                     let is_first_placed = first_placed_table == Some(ctrl_idx);
                     let is_last_placed = last_placed_table == Some(ctrl_idx);
-                    if self.is_effective_tac_table(para, table, &fmt) {
+                    // TAC 표는 통째 배치(typeset_tac_table)가 기본이다 — 한컴도 글자처럼
+                    // 취급 표를 쪽 경계에서 나누지 않고 통째로 넘긴다. 단 **빈 쪽에도 안
+                    // 들어가는** 표는 넘길 곳이 없어 통째 배치가 곧 쪽 밖 그리기가 된다
+                    // (셀을 채워 커진 양식 표: 값은 다 들어갔는데 인쇄하면 뒷부분이 안 보임).
+                    // 그런 표만 행 분할 경로로 보낸다. typeset_block_table_inner 는 이미
+                    // 다행 TAC 표의 행 경계 분할을 전제하고 1행 TAC 만 통째로 되돌린다.
+                    // 지금 쪽에 들어가는 표는 이 조건에 걸리지 않으므로 기존 배치는 불변이다.
+                    let tac_exceeds_empty_page = table.row_count > 1
+                        && matches!(
+                            table.page_break,
+                            crate::model::table::TablePageBreak::RowBreak
+                        )
+                        && mt.is_some_and(|m| m.total_height > st.available_height());
+                    if self.is_effective_tac_table(para, table, &fmt) && !tac_exceeds_empty_page {
                         self.typeset_tac_table(
                             st,
                             para_idx,
