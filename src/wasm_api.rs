@@ -620,6 +620,14 @@ impl HwpDocument {
         }
     }
 
+    /// 셀 채우기로 커진 실측 높이를 저장 모델(셀 높이 → 표 선언 높이 → TAC 호스트
+    /// LINE_SEG)에 반영한다. **내보내기 직전에 한 번** 부른다 — 자세한 배경은
+    /// `DocumentCore::sync_stored_table_heights_for_export` 문서 주석 참고.
+    #[wasm_bindgen(js_name = syncStoredTableHeightsForExport)]
+    pub fn sync_stored_table_heights_for_export(&mut self) -> bool {
+        self.core.sync_stored_table_heights_for_export()
+    }
+
     /// 총 페이지 수를 반환한다.
     #[wasm_bindgen(js_name = pageCount)]
     pub fn page_count(&self) -> u32 {

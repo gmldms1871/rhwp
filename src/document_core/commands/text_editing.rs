@@ -2124,6 +2124,133 @@ impl DocumentCore {
         }
     }
 
+    /// 문서의 모든 표에 대해 [`Self::sync_table_stored_heights`]를 수행한다 —
+    /// **내보내기 직전에 호출하는 공개 표면**이다.
+    ///
+    /// 셀 편집 커맨드 안에서 자동으로 부르지 않는 이유: 즉시 조판 경로에서만 부르면
+    /// deferred/resumable 조판(#2424)과 결과가 갈리고("resumable delete must match full
+    /// pagination" 불변식), 양쪽에서 부르면 deferred 경로의 증분 이득이 사라진다.
+    /// 채우기 후 저장하는 무상태 소비자(CLI·filler)는 저장 직전에 한 번 부르면 된다.
+    ///
+    /// 바뀐 표가 있으면 true (이때 조판은 이미 갱신된 상태로 다시 수행된다).
+    pub fn sync_stored_table_heights_for_export(&mut self) -> bool {
+        // batch 모드에서도 실측이 필요하므로 paginate_if_needed()가 아니라 paginate().
+        // (batch 는 Command 마다의 조판을 건너뛸 뿐, 내보내기 직전 1회는 있어야 한다.)
+        self.paginate();
+        let targets: Vec<(usize, usize, usize)> = self
+            .measured_tables
+            .iter()
+            .enumerate()
+            .flat_map(|(section_idx, tables)| {
+                tables
+                    .iter()
+                    .map(move |mt| (section_idx, mt.para_index, mt.control_index))
+            })
+            .collect();
+        let mut changed = false;
+        let mut sections = std::collections::BTreeSet::new();
+        for (section_idx, para_idx, ctrl_idx) in targets {
+            if self.sync_table_stored_heights(section_idx, para_idx, ctrl_idx) {
+                changed = true;
+                sections.insert(section_idx);
+            }
+        }
+        if changed {
+            for section_idx in sections {
+                // [#2724] 패스스루 무효화 — 셀/표 높이를 바꿨으므로 원본 바이트를
+                // 그대로 되돌려주면 안 된다. (sync_table_stored_heights 안에서도
+                // 같은 처리를 하지만, 이 공개 표면 자체가 IR 뮤테이터이므로 여기서도
+                // 명시한다.)
+                self.document.sections[section_idx].raw_stream = None;
+                self.recompose_section(section_idx);
+            }
+            self.paginate();
+        }
+        changed
+    }
+
+    /// 셀 편집으로 커진 실측 높이를 **저장 모델**에 반영한다 — 셀 높이 → 표 선언 높이
+    /// (`common.height` + `raw_ctrl_data`) → TAC 호스트 문단 LINE_SEG 순.
+    ///
+    /// 셀 텍스트 채우기는 셀 문단의 line_seg만 다시 잡을 뿐 표/호스트의 저장 높이를
+    /// 건드리지 않았다. 그 결과 값은 다 들어가는데 표는 원래 높이로 조판되어, 내용이
+    /// 쪽 밖으로 그려졌다(TypesetEngine은 TAC 표의 흐름 높이를 호스트 LINE_SEG에서
+    /// 가져온다 — `RHWP_DIAG_TAC` 의 `table_total`/`stored_ls` 참조). 행 삽입 경로가
+    /// `Table::update_ctrl_dimensions` 로 같은 정합을 유지하는 것과 같은 취지다.
+    ///
+    /// 높이는 **키우기만** 한다 — 줄이면 고정 높이로 저장된 양식 표(선언 높이를 신뢰하는
+    /// #1891/#3236 계열)의 조판이 흔들린다. 하나라도 바뀌면 true.
+    pub(crate) fn sync_table_stored_heights(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> bool {
+        use crate::renderer::px_to_hwpunit;
+
+        // 직전 paginate 가 남긴 실측 행 높이(px). 없으면 할 일 없음.
+        let row_heights_px: Vec<f64> =
+            match self.measured_tables.get(section_idx).and_then(|tables| {
+                tables
+                    .iter()
+                    .find(|mt| mt.para_index == parent_para_idx && mt.control_index == control_idx)
+            }) {
+                Some(mt) if !mt.row_heights.is_empty() => mt.row_heights.clone(),
+                _ => return false,
+            };
+        let dpi = self.dpi;
+        let row_target_hu: Vec<u32> = row_heights_px
+            .iter()
+            .map(|px| px_to_hwpunit(*px, dpi).max(0) as u32)
+            .collect();
+
+        let table = match self.document.sections[section_idx].paragraphs[parent_para_idx]
+            .controls
+            .get_mut(control_idx)
+        {
+            Some(Control::Table(table)) => table,
+            _ => return false,
+        };
+
+        let mut changed = false;
+        for cell in &mut table.cells {
+            let start = cell.row as usize;
+            let end = (start + cell.row_span.max(1) as usize).min(row_target_hu.len());
+            if start >= end {
+                continue;
+            }
+            let target: u32 = row_target_hu[start..end].iter().sum();
+            // 0x80000000 이상은 파서가 남기는 미확정 높이 — 건드리지 않는다.
+            if cell.height < 0x8000_0000 && target > cell.height {
+                cell.height = target;
+                changed = true;
+            }
+        }
+        if !changed {
+            return false;
+        }
+        table.update_ctrl_dimensions();
+        table.dirty = true;
+
+        // TAC 표: 호스트 문단의 줄 높이가 곧 표가 흐름에서 차지하는 높이다.
+        let is_tac = table.common.treat_as_char;
+        let host_line_hu = table.common.height as i64
+            + table.outer_margin_top as i64
+            + table.outer_margin_bottom as i64;
+        if is_tac {
+            let host_line_hu = host_line_hu.clamp(0, i32::MAX as i64) as i32;
+            let para = &mut self.document.sections[section_idx].paragraphs[parent_para_idx];
+            for seg in &mut para.line_segs {
+                if seg.line_height < host_line_hu {
+                    seg.line_height = host_line_hu;
+                    seg.text_height = host_line_hu;
+                }
+            }
+        }
+        self.document.sections[section_idx].raw_stream = None;
+        true
+    }
+
     pub(crate) fn reflow_cell_paragraph(
         &mut self,
         section_idx: usize,

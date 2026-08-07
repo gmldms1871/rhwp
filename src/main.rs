@@ -13628,6 +13628,9 @@ fn edit_serialize(
     doc: &mut rhwp::wasm_api::HwpDocument,
     format: EditOutputFormat,
 ) -> Result<Vec<u8>, String> {
+    // 셀 채우기로 커진 실측 높이를 저장 모델에 반영한 뒤 직렬화한다. 이걸 빼면
+    // 값은 다 들어간 파일이 원래 표 높이로 저장되어, 다시 여는 쪽이 쪽을 안 늘린다.
+    doc.sync_stored_table_heights_for_export();
     match format {
         EditOutputFormat::Hwpx => doc.export_hwpx_native(),
         EditOutputFormat::Hwp => doc.export_hwp_with_adapter(),
