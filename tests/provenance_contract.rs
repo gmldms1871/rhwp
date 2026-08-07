@@ -265,6 +265,16 @@ const CALLER_ECHO: &[(&str, &str)] = &[
     ),
     ("a", "ir-diff 비교 대상 A 경로"),
     ("b", "ir-diff 비교 대상 B 경로"),
+    (
+        "sourceA",
+        "render-diff 비교 대상 A 경로 — ir-diff 의 a/b 와 같은 호출자 반향이다. \
+         체크아웃 경로에 본문 낱말이 들어 있으면(예: .../gitProject/... 와 본문의 \
+         'Project') 문서 파생으로 오판된다",
+    ),
+    (
+        "sourceB",
+        "render-diff 비교 대상 B 경로 — sourceA 와 같은 반향",
+    ),
     ("query", "search 검색어 — 호출자가 준 값"),
     ("find", "edit/run 의 찾을 문자열"),
     ("replace", "edit/run 의 바꿀 문자열"),
